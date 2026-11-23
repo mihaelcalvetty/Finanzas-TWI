@@ -16,6 +16,7 @@ public class UsuarioService
     {
         return await _db.Usuarios
             .AsNoTracking()
+            .Where(u => u.Activo)
             .OrderBy(u => u.Nombre)
             .Select(u => new UsuarioResponseDto
             {
@@ -32,7 +33,7 @@ public class UsuarioService
     {
         return await _db.Usuarios
             .AsNoTracking()
-            .Where(u => u.Id == id)
+            .Where(u => u.Id == id && u.Activo)
             .Select(u => new UsuarioResponseDto
             {
                 Id = u.Id,
@@ -42,6 +43,22 @@ public class UsuarioService
                 Activo = u.Activo
             })
             .FirstOrDefaultAsync();
+    }
+
+    public async Task<bool> SoftDeleteAsync(Guid id)
+    {
+        var usuario = await _db.Usuarios
+            .FirstOrDefaultAsync(u => u.Id == id);
+
+        if (usuario is null)
+            return false;
+
+        if (!usuario.Activo)
+            throw new InvalidOperationException("El usuario ya se encuentra inactivo o eliminado.");
+
+        usuario.Activo = false;
+        await _db.SaveChangesAsync();
+        return true;
     }
 
     public async Task<UsuarioResponseDto> CreateAsync(CrearUsuarioDto dto)

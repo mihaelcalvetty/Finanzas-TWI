@@ -17,7 +17,7 @@ public class CuentaService
     {
         return await _db.Cuentas
             .AsNoTracking()
-            .Where(c => c.UsuarioId == usuarioId)
+            .Where(c => c.UsuarioId == usuarioId && c.Activa)
             .OrderBy(c => c.Nombre)
             .Select(c => new CuentaResponseDto
             {
@@ -37,7 +37,7 @@ public class CuentaService
     {
         return await _db.Cuentas
             .AsNoTracking()
-            .Where(c => c.Id == id && c.UsuarioId == usuarioId)
+            .Where(c => c.Id == id && c.UsuarioId == usuarioId && c.Activa)
             .Select(c => new CuentaResponseDto
             {
                 Id = c.Id,
@@ -50,6 +50,22 @@ public class CuentaService
                 Activa = c.Activa
             })
             .FirstOrDefaultAsync();
+    }
+
+    public async Task<bool> SoftDeleteAsync(Guid id, Guid usuarioId)
+    {
+        var cuenta = await _db.Cuentas
+            .FirstOrDefaultAsync(c => c.Id == id && c.UsuarioId == usuarioId);
+
+        if (cuenta is null)
+            return false;
+
+        if (!cuenta.Activa)
+            throw new InvalidOperationException("La cuenta ya se encuentra inactiva o eliminada.");
+
+        cuenta.Activa = false;
+        await _db.SaveChangesAsync();
+        return true;
     }
 
     public async Task<CuentaResponseDto> CreateAsync(Guid usuarioId, CrearCuentaDto dto)

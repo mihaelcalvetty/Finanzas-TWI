@@ -83,6 +83,25 @@ public class CuentaController : ControllerBase
         }
     }
 
+    [HttpDelete("{id:guid}")]
+    public async Task<IActionResult> Delete(Guid id)
+    {
+        if (!TryGetUsuarioId(out var usuarioId))
+        {
+            return Unauthorized(new { message = "No se pudo identificar al usuario autenticado." });
+        }
+
+        try
+        {
+            var eliminada = await _service.SoftDeleteAsync(id, usuarioId);
+            return eliminada ? NoContent() : NotFound();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
+    }
+
     private bool TryGetUsuarioId(out Guid usuarioId)
     {
         var rawId = User.FindFirstValue("usuario_id")

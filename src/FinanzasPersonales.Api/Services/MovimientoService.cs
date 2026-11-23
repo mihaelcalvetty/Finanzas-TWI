@@ -20,7 +20,7 @@ public class MovimientoService
     {
         var query = _db.Movimientos
             .AsNoTracking()
-            .Where(m => m.UsuarioId == usuarioId);
+            .Where(m => m.UsuarioId == usuarioId && m.Activo);
 
         if (cuentaId.HasValue)
             query = query.Where(m => m.CuentaId == cuentaId.Value);
@@ -54,7 +54,7 @@ public class MovimientoService
     {
         return await _db.Movimientos
             .AsNoTracking()
-            .Where(m => m.Id == id && m.UsuarioId == usuarioId)
+            .Where(m => m.Id == id && m.UsuarioId == usuarioId && m.Activo)
             .Select(m => new MovimientoResponseDto
             {
                 Id = m.Id,
@@ -72,6 +72,22 @@ public class MovimientoService
                 FechaRegistro = m.FechaRegistro
             })
             .FirstOrDefaultAsync();
+    }
+
+    public async Task<bool> SoftDeleteAsync(Guid id, Guid usuarioId)
+    {
+        var movimiento = await _db.Movimientos
+            .FirstOrDefaultAsync(m => m.Id == id && m.UsuarioId == usuarioId);
+
+        if (movimiento is null)
+            return false;
+
+        if (!movimiento.Activo)
+            throw new InvalidOperationException("El movimiento ya se encuentra inactivo o eliminado.");
+
+        movimiento.Activo = false;
+        await _db.SaveChangesAsync();
+        return true;
     }
 
     public async Task<MovimientoResponseDto> CreateAsync(Guid usuarioId, CrearMovimientoDto dto)

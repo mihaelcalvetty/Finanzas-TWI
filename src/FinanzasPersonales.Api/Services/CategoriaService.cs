@@ -19,7 +19,7 @@ public class CategoriaService
     {
         var query = _db.Categorias
             .AsNoTracking()
-            .Where(c => c.UsuarioId == usuarioId);
+            .Where(c => c.UsuarioId == usuarioId && c.Activa);
 
         if (!string.IsNullOrWhiteSpace(tipo))
         {
@@ -46,7 +46,7 @@ public class CategoriaService
     {
         return await _db.Categorias
             .AsNoTracking()
-            .Where(c => c.Id == id && c.UsuarioId == usuarioId)
+            .Where(c => c.Id == id && c.UsuarioId == usuarioId && c.Activa)
             .Select(c => new CategoriaResponseDto
             {
                 Id = c.Id,
@@ -58,6 +58,22 @@ public class CategoriaService
                 Activa = c.Activa
             })
             .FirstOrDefaultAsync();
+    }
+
+    public async Task<bool> SoftDeleteAsync(Guid id, Guid usuarioId)
+    {
+        var categoria = await _db.Categorias
+            .FirstOrDefaultAsync(c => c.Id == id && c.UsuarioId == usuarioId);
+
+        if (categoria is null)
+            return false;
+
+        if (!categoria.Activa)
+            throw new InvalidOperationException("La categoría ya se encuentra inactiva o eliminada.");
+
+        categoria.Activa = false;
+        await _db.SaveChangesAsync();
+        return true;
     }
 
     public async Task<CategoriaResponseDto> CreateAsync(Guid usuarioId, CrearCategoriaDto dto)
