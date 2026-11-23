@@ -42,6 +42,12 @@ public class CategoriaController : ControllerBase
     }
 
     [HttpPost]
+    public async Task<ActionResult<CategoriaResponseDto>> Create2(CrearCategoriaDto dto)
+    {
+        return Created();
+    }
+
+    [HttpPost]
     public async Task<ActionResult<CategoriaResponseDto>> Create(CrearCategoriaDto dto)
     {
         if (!TryGetUsuarioId(out var usuarioId))
