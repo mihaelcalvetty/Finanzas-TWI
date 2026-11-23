@@ -82,4 +82,47 @@ public class UsuarioService
             Activo = usuario.Activo
         };
     }
+
+    public async Task<UsuarioResponseDto?> UpdateAsync(Guid id, ActualizarUsuarioDto dto)
+    {
+        var usuario = await _db.Usuarios
+            .FirstOrDefaultAsync(u => u.Id == id);
+
+        if (usuario is null)
+            return null;
+
+        if (!usuario.Activo)
+            throw new InvalidOperationException("No se puede actualizar un usuario inactivo o eliminado.");
+
+        if (string.IsNullOrWhiteSpace(dto.Nombre))
+            throw new ArgumentException("El nombre es obligatorio.");
+
+        if (string.IsNullOrWhiteSpace(dto.Email))
+            throw new ArgumentException("El correo electrónico es obligatorio.");
+
+        var emailNormalizado = dto.Email.Trim().ToLowerInvariant();
+
+        var existeEmailEnOtroUsuario = await _db.Usuarios
+            .AnyAsync(u => u.Id != id && u.Email.ToLower() == emailNormalizado);
+
+        if (existeEmailEnOtroUsuario)
+            throw new InvalidOperationException("Ya existe otro usuario registrado con ese correo.");
+
+        usuario.Nombre = dto.Nombre.Trim();
+        usuario.Email = emailNormalizado;
+
+        if (!string.IsNullOrWhiteSpace(dto.PasswordHash))
+            usuario.PasswordHash = dto.PasswordHash;
+
+        await _db.SaveChangesAsync();
+
+        return new UsuarioResponseDto
+        {
+            Id = usuario.Id,
+            Nombre = usuario.Nombre,
+            Email = usuario.Email,
+            FechaCreacion = usuario.FechaCreacion,
+            Activo = usuario.Activo
+        };
+    }
 }

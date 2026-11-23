@@ -108,4 +108,50 @@ public class CategoriaService
             Activa = categoria.Activa
         };
     }
+
+    public async Task<CategoriaResponseDto?> UpdateAsync(
+        Guid id,
+        Guid usuarioId,
+        ActualizarCategoriaDto dto)
+    {
+        var categoria = await _db.Categorias
+            .Include(c => c.Usuario)
+            .FirstOrDefaultAsync(c => c.Id == id && c.UsuarioId == usuarioId);
+
+        if (categoria is null)
+            return null;
+
+        if (!categoria.Activa)
+            throw new InvalidOperationException("No se puede actualizar una categoría inactiva o eliminada.");
+
+        if (string.IsNullOrWhiteSpace(dto.Nombre))
+            throw new ArgumentException("El nombre de la categoría es obligatorio.");
+
+        var tipoNormalizado = dto.Tipo.Trim().ToLowerInvariant();
+        if (!TiposValidos.Contains(tipoNormalizado))
+            throw new ArgumentException("Tipo de categoría inválido. Use: ingreso o gasto.");
+
+        if (dto.LimiteMensual.HasValue && dto.LimiteMensual.Value < 0)
+            throw new ArgumentException("El límite mensual no puede ser negativo.");
+
+        if (tipoNormalizado == "ingreso" && dto.LimiteMensual.HasValue)
+            throw new ArgumentException("Solo las categorías de gasto pueden tener límite mensual.");
+
+        categoria.Nombre = dto.Nombre.Trim();
+        categoria.Tipo = tipoNormalizado;
+        categoria.LimiteMensual = dto.LimiteMensual;
+
+        await _db.SaveChangesAsync();
+
+        return new CategoriaResponseDto
+        {
+            Id = categoria.Id,
+            UsuarioId = categoria.UsuarioId,
+            NombreUsuario = categoria.Usuario.Nombre,
+            Nombre = categoria.Nombre,
+            Tipo = categoria.Tipo,
+            LimiteMensual = categoria.LimiteMensual,
+            Activa = categoria.Activa
+        };
+    }
 }

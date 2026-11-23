@@ -99,4 +99,51 @@ public class CuentaService
             Activa = cuenta.Activa
         };
     }
+
+    public async Task<CuentaResponseDto?> UpdateAsync(
+        Guid id,
+        Guid usuarioId,
+        ActualizarCuentaDto dto)
+    {
+        var cuenta = await _db.Cuentas
+            .Include(c => c.Usuario)
+            .FirstOrDefaultAsync(c => c.Id == id && c.UsuarioId == usuarioId);
+
+        if (cuenta is null)
+            return null;
+
+        if (!cuenta.Activa)
+            throw new InvalidOperationException("No se puede actualizar una cuenta inactiva o eliminada.");
+
+        if (string.IsNullOrWhiteSpace(dto.Nombre))
+            throw new ArgumentException("El nombre de la cuenta es obligatorio.");
+
+        var tipoNormalizado = dto.Tipo.Trim().ToLowerInvariant();
+        if (!TiposValidos.Contains(tipoNormalizado))
+            throw new ArgumentException("Tipo de cuenta inválido. Use: efectivo, banco o billetera_digital.");
+
+        if (dto.SaldoInicial < 0)
+            throw new ArgumentException("El saldo inicial no puede ser negativo.");
+
+        cuenta.Nombre = dto.Nombre.Trim();
+        cuenta.Tipo = tipoNormalizado;
+        cuenta.Moneda = string.IsNullOrWhiteSpace(dto.Moneda)
+            ? cuenta.Moneda
+            : dto.Moneda.Trim().ToUpperInvariant();
+        cuenta.SaldoInicial = dto.SaldoInicial;
+
+        await _db.SaveChangesAsync();
+
+        return new CuentaResponseDto
+        {
+            Id = cuenta.Id,
+            UsuarioId = cuenta.UsuarioId,
+            NombreUsuario = cuenta.Usuario.Nombre,
+            Nombre = cuenta.Nombre,
+            Tipo = cuenta.Tipo,
+            Moneda = cuenta.Moneda,
+            SaldoInicial = cuenta.SaldoInicial,
+            Activa = cuenta.Activa
+        };
+    }
 }

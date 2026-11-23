@@ -62,6 +62,29 @@ public class MovimientoController : ControllerBase
         }
     }
 
+    [HttpPut("{id:guid}")]
+    public async Task<ActionResult<MovimientoResponseDto>> Update(Guid id, ActualizarMovimientoDto dto)
+    {
+        if (!TryGetUsuarioId(out var usuarioId))
+        {
+            return Unauthorized(new { message = "No se pudo identificar al usuario autenticado." });
+        }
+
+        try
+        {
+            var actualizado = await _service.UpdateAsync(id, usuarioId, dto);
+            return actualizado is null ? NotFound() : Ok(actualizado);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
     private bool TryGetUsuarioId(out Guid usuarioId)
     {
         var rawId = User.FindFirstValue("usuario_id")

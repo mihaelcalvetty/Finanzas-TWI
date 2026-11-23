@@ -20,3 +20,11 @@ public class CuentaResponseDto
     public decimal SaldoInicial { get; set; }
     public bool Activa { get; set; }
 }
+
+public class ActualizarCuentaDto
+{
+    public string Nombre { get; set; } = string.Empty;
+    public string Tipo { get; set; } = string.Empty;
+    public string? Moneda { get; set; }
+    public decimal SaldoInicial { get; set; }
+}

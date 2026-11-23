@@ -15,6 +15,7 @@ public class Movimiento
     public DateOnly FechaMovimiento { get; set; }
     public string? Notas { get; set; }
     public DateTimeOffset FechaRegistro { get; set; } = DateTimeOffset.UtcNow;
+    public bool Activo { get; set; } = true;
 
     // Propiedades de navegación
     public Usuario Usuario { get; set; } = null!;

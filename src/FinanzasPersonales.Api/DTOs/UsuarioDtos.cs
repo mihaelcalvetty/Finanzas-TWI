@@ -16,3 +16,10 @@ public class UsuarioResponseDto
     public DateTimeOffset FechaCreacion { get; set; }
     public bool Activo { get; set; }
 }
+
+public class ActualizarUsuarioDto
+{
+    public string Nombre { get; set; } = string.Empty;
+    public string Email { get; set; } = string.Empty;
+    public string? PasswordHash { get; set; }
+}

@@ -18,3 +18,10 @@ public class CategoriaResponseDto
     public decimal? LimiteMensual { get; set; }
     public bool Activa { get; set; }
 }
+
+public class ActualizarCategoriaDto
+{
+    public string Nombre { get; set; } = string.Empty;
+    public string Tipo { get; set; } = string.Empty;
+    public decimal? LimiteMensual { get; set; }
+}

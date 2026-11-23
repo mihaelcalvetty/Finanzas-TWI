@@ -60,6 +60,29 @@ public class CuentaController : ControllerBase
         }
     }
 
+    [HttpPut("{id:guid}")]
+    public async Task<ActionResult<CuentaResponseDto>> Update(Guid id, ActualizarCuentaDto dto)
+    {
+        if (!TryGetUsuarioId(out var usuarioId))
+        {
+            return Unauthorized(new { message = "No se pudo identificar al usuario autenticado." });
+        }
+
+        try
+        {
+            var actualizada = await _service.UpdateAsync(id, usuarioId, dto);
+            return actualizada is null ? NotFound() : Ok(actualizada);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
     private bool TryGetUsuarioId(out Guid usuarioId)
     {
         var rawId = User.FindFirstValue("usuario_id")
