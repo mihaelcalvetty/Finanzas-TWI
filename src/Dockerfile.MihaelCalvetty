@@ -1,0 +1,20 @@
+# Etapa 1: Restaurar, compilar y publicar el backend integrado
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+
+COPY ["FinanzasPersonales.Api/FinanzasPersonales.Api.csproj", "FinanzasPersonales.Api/"]
+RUN dotnet restore "FinanzasPersonales.Api/FinanzasPersonales.Api.csproj"
+
+COPY ["FinanzasPersonales.Api/", "FinanzasPersonales.Api/"]
+WORKDIR "/src/FinanzasPersonales.Api"
+RUN dotnet publish "FinanzasPersonales.Api.csproj" -c Release -o /app/publish /p:UseAppHost=false
+
+# Etapa 2: Ejecutar únicamente los archivos compilados en runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
+WORKDIR /app
+
+ENV ASPNETCORE_URLS=http://+:8080
+EXPOSE 8080
+
+COPY --from=build /app/publish .
+ENTRYPOINT ["dotnet", "FinanzasPersonales.Api.dll"]
