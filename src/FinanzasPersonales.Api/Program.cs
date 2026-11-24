@@ -78,6 +78,14 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
+// Trabajo explícito de migración: no iniciar el servidor ni migrar en cada réplica.
+if (builder.Configuration["MIGRATE_DATABASE_ONLY"] == "true")
+{
+    using var scope = app.Services.CreateScope();
+    await scope.ServiceProvider.GetRequiredService<FinanzasDbContext>().Database.MigrateAsync();
+    return;
+}
+
 app.UseForwardedHeaders();
 
 if (app.Environment.IsDevelopment())

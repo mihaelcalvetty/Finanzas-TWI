@@ -1,13 +1,13 @@
 # ============================================================
 # Finanzas-TWI — Docker Compose RELEASE (4 Instancias Multi-Nodo)
 # ============================================================
-# Este archivo NO compila código: descarga la imagen desde Docker Hub.
+# Por defecto compila el código local; RELEASE_IMAGE permite usar otra etiqueta.
 #
 # Uso:
-#   docker compose -f docker-compose.release.yml pull
-#   docker compose -f docker-compose.release.yml up -d
-#   docker compose -f docker-compose.release.yml down -v
+#   docker compose -f docker-compose.release.yml up -d --build
 # ============================================================
+
+name: finanzas-twi-release
 
 services:
 
@@ -19,7 +19,7 @@ services:
     container_name: finanzas-db-release
     restart: unless-stopped
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${RELEASE_DB_PORT:-5433}:5432"
     environment:
       POSTGRES_DB: finanzas_db
       POSTGRES_USER: postgres
@@ -44,23 +44,19 @@ services:
   # 3. El mismo volumen 'dp_keys_release' para DataProtection (cifrado de cookies)
   # ----------------------------------------------------------
 
-  api-1:
-    image: ${DOCKER_IMAGE:-leonardocaceres/finanzasbeof:v1.0.0}
-    container_name: finanzas-api-1
-    restart: unless-stopped
-    ports:
-      - "5001:8080"
+  migrate:
+    image: ${RELEASE_IMAGE:-finanzas-twi-release:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
     env_file:
       - .env
     environment:
       ConnectionStrings__DefaultConnection: >-
         Host=db;Port=5432;Database=finanzas_db;Username=postgres;Password=${DB_PASSWORD:-dev_password_cambiar}
       ASPNETCORE_ENVIRONMENT: Production
-      DISABLE_HTTPS_REDIRECTION: "true"
-      USE_HTTP_COOKIES: "true"
+      MIGRATE_DATABASE_ONLY: "true"
       DATA_PROTECTION_KEYS_PATH: /app/dataprotection-keys
-      CORS_ALLOWED_ORIGINS: >-
-        http://localhost:3000,http://localhost:5001,http://localhost:5002,http://localhost:5003,http://localhost:5004,http://localhost:5500,http://127.0.0.1:3000,http://127.0.0.1:5001,http://127.0.0.1:5002,http://127.0.0.1:5003,http://127.0.0.1:5004
     volumes:
       - dp_keys_release:/app/dataprotection-keys
     depends_on:
@@ -68,13 +64,17 @@ services:
         condition: service_healthy
     networks:
       - finanzas-release-net
+    restart: "no"
 
-  api-2:
-    image: ${DOCKER_IMAGE:-leonardocaceres/finanzasbeof:v1.0.0}
-    container_name: finanzas-api-2
+  api-1:
+    image: ${RELEASE_IMAGE:-finanzas-twi-release:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: finanzas-api-1
     restart: unless-stopped
     ports:
-      - "5002:8080"
+      - "127.0.0.1:5001:8080"
     env_file:
       - .env
     environment:
@@ -83,23 +83,60 @@ services:
       ASPNETCORE_ENVIRONMENT: Production
       DISABLE_HTTPS_REDIRECTION: "true"
       USE_HTTP_COOKIES: "true"
+      AUTH_COOKIE_NAME: .FinanzasPersonales.Release.Auth
+      ANTIFORGERY_COOKIE_NAME: Finanzas.Release.Antiforgery
       DATA_PROTECTION_KEYS_PATH: /app/dataprotection-keys
       CORS_ALLOWED_ORIGINS: >-
-        http://localhost:3000,http://localhost:5001,http://localhost:5002,http://localhost:5003,http://localhost:5004,http://localhost:5500,http://127.0.0.1:3000,http://127.0.0.1:5001,http://127.0.0.1:5002,http://127.0.0.1:5003,http://127.0.0.1:5004
+        http://localhost:3000,http://localhost:3001,http://localhost:5001,http://localhost:5002,http://localhost:5003,http://localhost:5004,http://localhost:5500,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:5001,http://127.0.0.1:5002,http://127.0.0.1:5003,http://127.0.0.1:5004
     volumes:
       - dp_keys_release:/app/dataprotection-keys
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      finanzas-release-net:
+        aliases:
+          - backend
+
+  api-2:
+    image: ${RELEASE_IMAGE:-finanzas-twi-release:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: finanzas-api-2
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5002:8080"
+    env_file:
+      - .env
+    environment:
+      ConnectionStrings__DefaultConnection: >-
+        Host=db;Port=5432;Database=finanzas_db;Username=postgres;Password=${DB_PASSWORD:-dev_password_cambiar}
+      ASPNETCORE_ENVIRONMENT: Production
+      DISABLE_HTTPS_REDIRECTION: "true"
+      USE_HTTP_COOKIES: "true"
+      AUTH_COOKIE_NAME: .FinanzasPersonales.Release.Auth
+      ANTIFORGERY_COOKIE_NAME: Finanzas.Release.Antiforgery
+      DATA_PROTECTION_KEYS_PATH: /app/dataprotection-keys
+      CORS_ALLOWED_ORIGINS: >-
+        http://localhost:3000,http://localhost:3001,http://localhost:5001,http://localhost:5002,http://localhost:5003,http://localhost:5004,http://localhost:5500,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:5001,http://127.0.0.1:5002,http://127.0.0.1:5003,http://127.0.0.1:5004
+    volumes:
+      - dp_keys_release:/app/dataprotection-keys
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     networks:
       - finanzas-release-net
 
   api-3:
-    image: ${DOCKER_IMAGE:-leonardocaceres/finanzasbeof:v1.0.0}
+    image: ${RELEASE_IMAGE:-finanzas-twi-release:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: finanzas-api-3
     restart: unless-stopped
     ports:
-      - "5003:8080"
+      - "127.0.0.1:5003:8080"
     env_file:
       - .env
     environment:
@@ -108,23 +145,28 @@ services:
       ASPNETCORE_ENVIRONMENT: Production
       DISABLE_HTTPS_REDIRECTION: "true"
       USE_HTTP_COOKIES: "true"
+      AUTH_COOKIE_NAME: .FinanzasPersonales.Release.Auth
+      ANTIFORGERY_COOKIE_NAME: Finanzas.Release.Antiforgery
       DATA_PROTECTION_KEYS_PATH: /app/dataprotection-keys
       CORS_ALLOWED_ORIGINS: >-
-        http://localhost:3000,http://localhost:5001,http://localhost:5002,http://localhost:5003,http://localhost:5004,http://localhost:5500,http://127.0.0.1:3000,http://127.0.0.1:5001,http://127.0.0.1:5002,http://127.0.0.1:5003,http://127.0.0.1:5004
+        http://localhost:3000,http://localhost:3001,http://localhost:5001,http://localhost:5002,http://localhost:5003,http://localhost:5004,http://localhost:5500,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:5001,http://127.0.0.1:5002,http://127.0.0.1:5003,http://127.0.0.1:5004
     volumes:
       - dp_keys_release:/app/dataprotection-keys
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - finanzas-release-net
 
   api-4:
-    image: ${DOCKER_IMAGE:-leonardocaceres/finanzasbeof:v1.0.0}
+    image: ${RELEASE_IMAGE:-finanzas-twi-release:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: finanzas-api-4
     restart: unless-stopped
     ports:
-      - "5004:8080"
+      - "127.0.0.1:5004:8080"
     env_file:
       - .env
     environment:
@@ -133,14 +175,16 @@ services:
       ASPNETCORE_ENVIRONMENT: Production
       DISABLE_HTTPS_REDIRECTION: "true"
       USE_HTTP_COOKIES: "true"
+      AUTH_COOKIE_NAME: .FinanzasPersonales.Release.Auth
+      ANTIFORGERY_COOKIE_NAME: Finanzas.Release.Antiforgery
       DATA_PROTECTION_KEYS_PATH: /app/dataprotection-keys
       CORS_ALLOWED_ORIGINS: >-
-        http://localhost:3000,http://localhost:5001,http://localhost:5002,http://localhost:5003,http://localhost:5004,http://localhost:5500,http://127.0.0.1:3000,http://127.0.0.1:5001,http://127.0.0.1:5002,http://127.0.0.1:5003,http://127.0.0.1:5004
+        http://localhost:3000,http://localhost:3001,http://localhost:5001,http://localhost:5002,http://localhost:5003,http://localhost:5004,http://localhost:5500,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:5001,http://127.0.0.1:5002,http://127.0.0.1:5003,http://127.0.0.1:5004
     volumes:
       - dp_keys_release:/app/dataprotection-keys
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - finanzas-release-net
 
@@ -154,7 +198,7 @@ services:
     container_name: finanzas-frontend-release
     restart: unless-stopped
     ports:
-      - "${FRONTEND_PORT:-3000}:80"
+      - "127.0.0.1:${RELEASE_FRONTEND_PORT:-3001}:80"
     environment:
       # Inicia apuntando a la primera instancia (5001)
       API_URL: "http://localhost:5001"

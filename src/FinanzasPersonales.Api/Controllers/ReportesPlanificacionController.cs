@@ -199,6 +199,7 @@ public class ReportesPlanificacionController : ControllerBase
     }
 
     [HttpPost("sembrar-datos-ejemplo")]
+    [ValidateAntiForgeryToken]
     public async Task<IActionResult> SembrarDatosEjemplo(CancellationToken cancellationToken)
     {
         var usuarioId = await ObtenerUsuarioIdAsync(cancellationToken);
@@ -219,7 +220,7 @@ public class ReportesPlanificacionController : ControllerBase
             {
                 Id = usuarioId,
                 Nombre = User.Identity?.Name ?? "Usuario Dev3",
-                Email = User.FindFirstValue(ClaimTypes.Email) ?? $"usuario_{usuarioId:N}@local.dev",
+                Email = $"usuario_{usuarioId:N}@local.dev",
                 Activo = true,
                 FechaCreacion = DateTimeOffset.UtcNow
             };
@@ -259,10 +260,11 @@ public class ReportesPlanificacionController : ControllerBase
         }
         await _db.SaveChangesAsync(cancellationToken);
 
-        // 1. Meta de Ahorro
-        if (!await _db.MetasAhorro.AnyAsync(m => m.UsuarioId == usuarioId, cancellationToken))
+        // Completar hasta dos registros por sección sin modificar los existentes.
+        var metasExistentes = await _db.MetasAhorro.Where(m => m.UsuarioId == usuarioId)
+            .Select(m => m.Nombre).ToListAsync(cancellationToken);
+        var metasEjemplo = new[]
         {
-            _db.MetasAhorro.AddRange(
                 new MetaAhorro
                 {
                     Id = Guid.NewGuid(),
@@ -283,27 +285,38 @@ public class ReportesPlanificacionController : ControllerBase
                     FechaLimite = hoy.AddMonths(-1),
                     Estado = "completada"
                 }
-            );
+        };
+        foreach (var meta in metasEjemplo)
+        {
+            if (metasExistentes.Count >= 2) break;
+            if (metasExistentes.Contains(meta.Nombre, StringComparer.OrdinalIgnoreCase)) continue;
+            _db.MetasAhorro.Add(meta);
+            metasExistentes.Add(meta.Nombre);
         }
 
-        // 2. Presupuesto Mensual
-        if (!await _db.PresupuestosMensuales.AnyAsync(p => p.UsuarioId == usuarioId, cancellationToken))
+        var presupuestosExistentes = await _db.PresupuestosMensuales.Where(p => p.UsuarioId == usuarioId)
+            .Select(p => new { p.CategoriaId, p.Año, p.Mes }).ToListAsync(cancellationToken);
+        // Buscar períodos libres para no infringir la clave única por categoría/año/mes.
+        var periodo = new DateOnly(año, mes, 1);
+        for (var intento = 0; presupuestosExistentes.Count < 2 && intento < 24; intento++, periodo = periodo.AddMonths(-1))
         {
+            if (presupuestosExistentes.Any(p => p.CategoriaId == categoria.Id && p.Año == periodo.Year && p.Mes == periodo.Month)) continue;
             _db.PresupuestosMensuales.Add(new PresupuestoMensual
             {
                 Id = Guid.NewGuid(),
                 UsuarioId = usuarioId,
                 CategoriaId = categoria.Id,
-                Año = año,
-                Mes = mes,
+                Año = (short)periodo.Year,
+                Mes = (short)periodo.Month,
                 MontoLimite = 1800m
             });
+            presupuestosExistentes.Add(new { CategoriaId = categoria.Id, Año = (short)periodo.Year, Mes = (short)periodo.Month });
         }
 
-        // 3. Movimiento Recurrente
-        if (!await _db.MovimientosRecurrentes.AnyAsync(r => r.UsuarioId == usuarioId, cancellationToken))
+        var recurrenciasExistentes = await _db.MovimientosRecurrentes.Where(r => r.UsuarioId == usuarioId && r.Activo)
+            .Select(r => r.Concepto).ToListAsync(cancellationToken);
+        var recurrenciasEjemplo = new[]
         {
-            _db.MovimientosRecurrentes.AddRange(
                 new MovimientoRecurrente
                 {
                     Id = Guid.NewGuid(),
@@ -332,13 +345,19 @@ public class ReportesPlanificacionController : ControllerBase
                     ProximaFecha = hoy.AddMonths(1),
                     Activo = true
                 }
-            );
+        };
+        foreach (var recurrencia in recurrenciasEjemplo)
+        {
+            if (recurrenciasExistentes.Count >= 2) break;
+            if (recurrenciasExistentes.Contains(recurrencia.Concepto, StringComparer.OrdinalIgnoreCase)) continue;
+            _db.MovimientosRecurrentes.Add(recurrencia);
+            recurrenciasExistentes.Add(recurrencia.Concepto);
         }
 
-        // 4. Recordatorios de Pago
-        if (!await _db.RecordatoriosPago.AnyAsync(rp => rp.UsuarioId == usuarioId, cancellationToken))
+        var recordatoriosExistentes = await _db.RecordatoriosPago.Where(r => r.UsuarioId == usuarioId)
+            .Select(r => r.Titulo).ToListAsync(cancellationToken);
+        var recordatoriosEjemplo = new[]
         {
-            _db.RecordatoriosPago.AddRange(
                 new RecordatorioPago
                 {
                     Id = Guid.NewGuid(),
@@ -360,11 +379,17 @@ public class ReportesPlanificacionController : ControllerBase
                     FechaPago = hoy.AddDays(-2),
                     Notas = "Pagado puntualmente"
                 }
-            );
+        };
+        foreach (var recordatorio in recordatoriosEjemplo)
+        {
+            if (recordatoriosExistentes.Count >= 2) break;
+            if (recordatoriosExistentes.Contains(recordatorio.Titulo, StringComparer.OrdinalIgnoreCase)) continue;
+            _db.RecordatoriosPago.Add(recordatorio);
+            recordatoriosExistentes.Add(recordatorio.Titulo);
         }
 
         await _db.SaveChangesAsync(cancellationToken);
-        return Ok(new { mensaje = "Datos de prueba creados exitosamente para el usuario actual." });
+        return Ok(new { mensaje = "Datos de ejemplo completados para el usuario actual." });
     }
 
     private static DiagnosticoFinancieroDto GenerarDiagnostico(
@@ -414,16 +439,16 @@ public class ReportesPlanificacionController : ControllerBase
         );
     }
 
-    private async Task<Guid> ObtenerUsuarioIdAsync(CancellationToken ct)
+    private Task<Guid> ObtenerUsuarioIdAsync(CancellationToken ct)
     {
         // 1. Si existe en context.Items (inyectado por filtros)
         if (HttpContext.Items.TryGetValue("UsuarioId", out var item) && item is Guid g && g != Guid.Empty)
-            return g;
+            return Task.FromResult(g);
 
         // 2. Si viene como claim directo "usuario_id" o NameIdentifier parseable
         var claimId = User.FindFirstValue("usuario_id") ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (Guid.TryParse(claimId, out var parsedGuid) && parsedGuid != Guid.Empty)
-            return parsedGuid;
+            return Task.FromResult(parsedGuid);
 
         // 3. Revisar en VinculosIdentidadDev3Options
         var proveedor = User.FindFirstValue(Dev3Authentication.ProviderClaim) ?? User.FindFirstValue("provider");
@@ -435,27 +460,18 @@ public class ReportesPlanificacionController : ControllerBase
                 v.IdentificadorExterno == externo);
 
             if (vinculo != null && vinculo.UsuarioId != Guid.Empty)
-                return vinculo.UsuarioId;
+                return Task.FromResult(vinculo.UsuarioId);
         }
 
-        // 4. Si el usuario tiene email, buscar en db.Usuarios
-        var email = User.FindFirstValue(ClaimTypes.Email) ?? User.FindFirstValue("email");
-        if (!string.IsNullOrWhiteSpace(email))
-        {
-            var usuarioDb = await _db.Usuarios.AsNoTracking()
-                .FirstOrDefaultAsync(u => u.Email.ToLower() == email.ToLower(), ct);
-            if (usuarioDb != null)
-                return usuarioDb.Id;
-        }
-
-        // 5. Fallback consistente: Generar un GUID determinístico a partir del identificador externo
+        // Nunca asociar cuentas financieras por correo: puede coincidir entre proveedores.
+        // Fallback consistente para las identidades de la demostración.
         if (!string.IsNullOrWhiteSpace(externo))
         {
             using var md5 = MD5.Create();
             var hash = md5.ComputeHash(Encoding.UTF8.GetBytes($"{proveedor}:{externo}"));
-            return new Guid(hash);
+            return Task.FromResult(new Guid(hash));
         }
 
-        return Guid.Empty;
+        return Task.FromResult(Guid.Empty);
     }
 }

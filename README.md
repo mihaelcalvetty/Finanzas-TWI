@@ -102,9 +102,42 @@ Registrado **antes de programar**. Cada integrante implementa **2 botones funcio
    dotnet run --project src/FinanzasPersonales.Api
    ```
 
-## Autenticación externa unificada — seis proveedores
+## Docker Release local con cuatro instancias
 
-Google, Discord, Twitch, Spotify, Dropbox y Microsoft usan la misma estructura: cada controlador declara únicamente su proveedor, esquema y rutas, y hereda login/consulta de identidad de `ExternalAuthControllerBase`. Toda la configuración está en `Authentication/ExternalAuthentication.cs`, con **un único registro de `Cookies`**. Esto resuelve el error de arranque `Scheme already exists: Cookies`.
+Este modo es una **demostración local**, no un despliegue de producción endurecido. Usa `.env` local y construye el código actual; no publica ni descarga imágenes automáticamente:
+
+```bash
+docker compose -f docker-compose.release.yml up -d --build
+docker compose -f docker-compose.release.yml ps
+```
+
+El frontend queda en `http://localhost:3001` y las APIs en `http://localhost:5001` a `http://localhost:5004`. Los puertos de Release se publican solo en loopback. PostgreSQL Release usa `localhost:5433` y un volumen propio; no comparte los datos de desarrollo. Un servicio de migración único aplica las migraciones EF pendientes antes de iniciar las cuatro APIs; si falla, las APIs no arrancan. No elimina volúmenes ni tablas. Antes de migrar una base existente, respaldarla y revisar las migraciones.
+
+Las instancias comparten base de datos y claves de protección para reconocer la cookie `.FinanzasPersonales.Release.Auth` entre puertos; la cookie de desarrollo tiene otro nombre. El frontend utiliza `localhost:5001` por defecto: su selector permite cambiar de instancia. Para probar cada proveedor hay que registrar sus callbacks para los puertos usados y completar el login en el navegador; la posibilidad de registrar HTTP local depende del proveedor. En particular Slack exige HTTPS.
+
+En los proveedores que admitan callbacks HTTP locales, registrar por cada puerto que se use (`5001`, `5002`, `5003` y `5004`) la dirección con la ruta correspondiente:
+
+| Proveedor | Ejemplo para instancia 1 |
+| --- | --- |
+| Google | `http://localhost:5001/api/auth/google/callback` |
+| Discord | `http://localhost:5001/api/auth/discord/callback` |
+| Twitch | `http://localhost:5001/signin-twitch` |
+| Spotify (backend) | `http://localhost:5001/signin-spotify` |
+| Dropbox | `http://localhost:5001/auth/dropbox/callback` |
+| Microsoft (backend) | `http://localhost:5001/auth/microsoft/callback` |
+| X | `http://localhost:5001/api/auth/x/callback` |
+
+Estas rutas son los valores predeterminados; si se configuró otro `CallbackPath`, registrar la ruta real. Añadir cada puerto en la consola no garantiza que un proveedor acepte HTTP o múltiples callbacks. No registrar claves ni secretos en la documentación.
+
+Para Slack con el dominio ngrok ya configurado, detener el túnel anterior y dirigirlo al **frontend Release**: `ngrok http 3001 --url https://projector-delegate-hulk.ngrok-free.dev`. En Slack registrar el origen o callback correspondiente; al abrir el dominio HTTPS el proxy dirige `/api/` a `api-1`, manteniendo cookie y frontend en el mismo origen. El frontend y la configuración Nginx permiten explícitamente ese dominio; si cambia se deben actualizar ambos. Un solo túnel no puede apuntar simultáneamente a los dos frontends con la misma dirección. X conserva su state en memoria por instancia: iniciar y completar el login en la misma instancia (el proxy ngrok usa `api-1`); para balanceo real se necesita caché compartido o afinidad.
+
+Desarrollo y Release usan proyectos Compose distintos, así que pueden coexistir. Las claves y la base de Release también están separadas de las de desarrollo; no se trasladan sesiones ni datos entre entornos. Para detener solo Release sin borrar sus datos: `docker compose -f docker-compose.release.yml down`. No utilizar `down -v` si se quieren conservar los volúmenes. Para usar otro puerto de frontend, además de `RELEASE_FRONTEND_PORT` hay que ajustar los orígenes CORS y los hosts permitidos por `Front/nginx.conf`.
+
+`RELEASE_IMAGE` cambia la etiqueta de la imagen; `--build` construye siempre el código local. Usar una imagen publicada requiere una política de despliegue explícita y verificar que contiene el código correcto. El Compose utiliza HTTP entre procesos y `ASPNETCORE_ENVIRONMENT=Production`, pero eso **no lo convierte en seguro para producción pública**. Revisar autenticación, proxy confiable, HTTPS, secretos y despliegue antes de exponerlo.
+
+## Autenticación externa unificada — seis visibles y ocho en backend
+
+Google, Discord, Twitch, Spotify, Dropbox, Microsoft, X y Slack usan la misma estructura: cada controlador declara únicamente su proveedor, esquema y rutas, y hereda login/consulta de identidad de `ExternalAuthControllerBase`. La configuración está en `Authentication/ExternalAuthentication.cs`, con **un único registro de `Cookies`**. Microsoft y Spotify se conservan en el backend, pero sus botones se reemplazan por X y Slack. `/api/auth/providers` publica los ocho estados, sin credenciales.
 
 La única página es **https://localhost:7133/**, con el diseño oscuro, los seis botones, avisos de configuración/errores y la identidad activa. `/auth/login` y `/auth/dev3` redirigen a ella; ya no existe una segunda vista Razor. Después del login, cancelación o logout se vuelve a la misma interfaz. El puerto 7133 procede del perfil `https` existente en `Properties/launchSettings.json`.
 
@@ -119,7 +152,7 @@ La única página es **https://localhost:7133/**, con el diseño oscuro, los sei
 | Cerrar sesión local | `POST /api/auth/logout` |
 | Alias anteriores Dev3 | `/auth/dev3`, `/auth/dev3/session`, `/auth/dev3/logout`, `/auth/dropbox/login`, `/auth/microsoft/login` |
 
-`{proveedor}` es `google`, `discord`, `twitch`, `spotify`, `dropbox` o `microsoft`. Los POST de login y logout exigen token antiforgery (formulario o header `RequestVerificationToken`). GET login conserva los enlaces existentes, pero siempre usa state/correlación del middleware. `returnUrl` solo permite rutas locales: se rechazan redirecciones externas.
+`{proveedor}` es `google`, `discord`, `twitch`, `spotify`, `dropbox`, `microsoft`, `x` o `slack`. Los POST de login y logout exigen token antiforgery (formulario o header `RequestVerificationToken`). GET login conserva los enlaces existentes, pero siempre usa state/correlación del middleware. `returnUrl` solo permite rutas locales o los orígenes explícitamente autorizados para el frontend.
 
 Los callbacks los atienden los middleware oficiales, no acciones MVC manuales. Registrar estas URL exactas para el perfil HTTPS actual:
 
@@ -131,8 +164,20 @@ Los callbacks los atienden los middleware oficiales, no acciones MVC manuales. R
 | Spotify | `https://localhost:7133/signin-spotify` | OAuth Code + PKCE |
 | Dropbox | `https://localhost:7133/auth/dropbox/callback` | OAuth Code + PKCE |
 | Microsoft | `https://localhost:7133/auth/microsoft/callback` | OIDC, Code + PKCE, `form_post` |
+| X (Twitter) | `https://localhost:7133/api/auth/x/callback` | OAuth Code + PKCE S256, cliente web confidencial |
+| Slack | `https://ORIGEN-HTTPS/api/auth/slack/callback` | Sign in with Slack, OpenID Connect Code, respuesta query |
 
 Cada proveedor mantiene las particularidades de su protocolo, no una validación criptográfica manual. No usar los callbacks como botones de login. Si antes Google/Discord tenían registrado `http://localhost:5257/...`, actualizar sus portales para el origen HTTPS real. Se acepta el antiguo `RedirectUri` para extraer **la ruta**, pero el origen/puerto del callback se obtiene de la petición actual.
+
+En el Compose de desarrollo HTTP (`USE_HTTP_COOKIES=true`), Google y Microsoft usan **Code + PKCE con respuesta `query` (GET)** para que el navegador envíe sus cookies de correlación/nonce `SameSite=Lax`. En HTTPS se conserva `form_post` con cookies `SameSite=None; Secure`. No se deshabilita la validación de state, nonce, firma, audiencia o emisor. Los tokens siempre se intercambian en el servidor; el retorno GET solo transporta el código de autorización. No registrar ni compartir URLs de callback con códigos/state.
+
+Con el backend Docker publicado en el puerto 5000, registrar `http://localhost:5000/api/auth/google/callback` en Google y `http://localhost:5000/auth/microsoft/callback` en Microsoft. Usar siempre el mismo host (`localhost`, sin alternar con `127.0.0.1`). HTTP es solo para desarrollo local; un despliegue público debe usar HTTPS.
+
+Los errores/cancelaciones conservan el retorno autorizado al frontend, incluso si tiene parámetros o fragmento `#`. El frontend muestra avisos persistentes y elimina errores anteriores del URL de retorno al iniciar un intento nuevo. Tras actualizar código en Docker, reconstruir los servicios sin tocar la base:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d --build --no-deps backend frontend
+```
 
 ### Configuración local sin secretos versionados
 
@@ -196,13 +241,58 @@ El middleware intercambia el código por HTTPS y consulta `POST https://api.drop
 
 El middleware OIDC valida state/correlación, nonce, firma, audiencia y vigencia. El emisor se valida con `AadIssuerValidator`, biblioteca oficial de Microsoft compatible con emisores por tenant. No se desactiva la validación de emisor para aceptar cuentas personales.
 
+### Configurar Sign in with Slack
+
+1. Crear una aplicación en [Slack Apps](https://api.slack.com/apps) y seleccionar un workspace. Seguir la configuración de [Sign in with Slack](https://docs.slack.dev/authentication/sign-in-with-slack/); se solicitan `openid`, `profile` y `email`, no permisos de bot ni mensajes.
+2. En **OAuth & Permissions**, registrar exactamente la URL HTTPS del backend seguida de `/api/auth/slack/callback`. Slack exige HTTPS: el Docker actual expone `http://localhost:5000`, por lo que **no basta registrar ese HTTP**. Se necesita una API servida por HTTPS o un proxy/túnel HTTPS confiable. El backend debe recibir el host y protocolo públicos correctos para generar el mismo `redirect_uri`; configurar encabezados reenviados solo desde un proxy de confianza. No exponer el backend directamente sin revisar su configuración de proxies y seguridad.
+3. En **Basic Information**, copiar el **Client ID** y **Client Secret** al `.env` local (no compartirlos):
+
+   ```dotenv
+   Authentication__Slack__ClientId=CLIENT_ID_REAL
+   Authentication__Slack__ClientSecret=CLIENT_SECRET_REAL
+   Authentication__Slack__CallbackPath=/api/auth/slack/callback
+   ```
+
+4. Reconstruir backend y frontend: `docker compose -f docker-compose.dev.yml up -d --build --no-deps backend frontend`. Tras preparar HTTPS, probar el inicio con una cuenta del workspace. Otros workspaces pueden requerir distribución o aprobación del administrador en Slack. Esta integración crea la sesión local, no vincula automáticamente usuarios financieros.
+
+Para el túnel de desarrollo configurado actualmente, detener ngrok y ejecutarlo apuntando al frontend: `ngrok http 3000 --url https://projector-delegate-hulk.ngrok-free.dev`. Abrir ese origen HTTPS para iniciar sesión; el frontend reenvía `/api/` al backend bajo el mismo origen. Registrar en Slack `https://projector-delegate-hulk.ngrok-free.dev/api/auth/slack/callback`. El dominio está explícitamente permitido en `Front/nginx.conf` y `Front/index.html`; si cambia, actualizar ambos archivos y reconstruir el frontend. El túnel expone el servicio a internet: usar solo durante las pruebas y detenerlo después; el backend de desarrollo confía actualmente en cabeceras reenviadas y no está endurecido para exposición pública.
+
+Slack utiliza discovery OIDC, validación de firma/emisor/audiencia, state y nonce; no se guardan tokens. Su metadata actual anuncia retorno `query` y no anuncia PKCE. El login real requiere pruebas con credenciales y un callback HTTPS accesible.
+
+### Registrar X (Twitter) y reemplazar solo el botón de Microsoft
+
+1. Entrar en [X Developer Console](https://console.x.com/) (también accesible desde [developer.x.com](https://developer.x.com/)). Solicitar acceso de desarrollador si la cuenta aún no lo tiene y crear/seleccionar una App; si el portal agrupa Apps en proyectos, seleccionar el proyecto correspondiente.
+2. En **User authentication settings**, habilitar **OAuth 2.0** y elegir **Web App / Automated App or Bot**, es decir, cliente **confidencial**, no Native App/SPA. Usar permisos de lectura; no se necesita escribir publicaciones, mensajes o seguir cuentas.
+3. Registrar en **Callback URI / Redirect URL** exactamente **`http://localhost:5000/api/auth/x/callback`** para el Docker de desarrollo. Con `dotnet run` HTTPS usar **`https://localhost:7133/api/auth/x/callback`**. El callback pertenece al backend, nunca al frontend 3000. Si el portal no admite el origen local elegido, usar un origen HTTPS válido y ajustar el origen real de la API y su callback registrado; no sustituir la ruta por la del frontend.
+4. Completar **Website URL** con la URL real del proyecto/sitio; si el portal requiere términos o política de privacidad, proporcionar páginas reales aplicables a la aplicación.
+5. En **Keys and Tokens**, copiar **OAuth 2.0 Client ID** y **Client Secret**. No confundirlos con **API Key / API Key Secret** de OAuth 1.0a ni con un Bearer Token de aplicación. El backend realiza el canje mediante HTTP Basic y PKCE S256, como exige X para clientes confidenciales.
+6. Añadir solo al `.env` local, sin compartir secretos:
+
+   ```dotenv
+   Authentication__X__ClientId=CLIENT_ID_OAUTH2_REAL
+   Authentication__X__ClientSecret=CLIENT_SECRET_OAUTH2_REAL
+   Authentication__X__CallbackPath=/api/auth/x/callback
+   ```
+
+7. Reconstruir/recrear backend y frontend con `docker compose -f docker-compose.dev.yml up -d --build --no-deps backend frontend`. Abrir `http://localhost:3000`, recargar con Ctrl+F5 y pulsar **Iniciar sesión con X (Twitter)**. Verificar `/api/auth/me` y `/api/auth/x/user` después del retorno y probar el cierre de sesión. Microsoft permanece accesible mediante `/api/auth/microsoft/login` y `/api/auth/microsoft/user`, aunque no haya botón.
+
+**Coste/acceso:** la [documentación actual de X](https://docs.x.com/x-api/getting-started/pricing) describe un modelo de créditos y pago por uso. Revisar el acceso a `GET /2/users/me`, saldo y límites de gasto en la consola antes de probar; no se garantiza acceso gratuito ni se compra/activa facturación desde este proyecto. Autorizar la App no garantiza poder leer el perfil si falta acceso o crédito.
+
+El código solicita `users.read` y `tweet.read`, los scopes documentados para [`GET /2/users/me`](https://docs.x.com/x-api/users/get-my-user). Solo consulta identidad: no obtiene publicaciones ni pide escritura, `offline.access` o correo. El email puede aparecer como no proporcionado; la sesión se identifica por `x|<id>`, nunca por correo.
+
+X limita `state` a 500 caracteres. `XCachedStateFormat` usa un identificador aleatorio corto y conserva las propiedades cifradas del intento en el `IDistributedCache` existente, con caducidad de 10 minutos y consumo al retornar. No almacena tokens ni crea tablas. El caché actual es **local al proceso**: no reiniciar el backend en medio del login; con balanceo entre instancias se necesita caché realmente compartido o afinidad de sesión. La correlación y la protección de state siguen a cargo del middleware, no se desactivan.
+
+Este aporte añade autenticación X, no vinculación financiera automática: el acceso a registros `Usuario` requiere autorización/vinculación explícita por separado. No se amplían silenciosamente las identidades aceptadas por los filtros de los controladores financieros.
+
+Referencias: [OAuth 2.0 + PKCE](https://docs.x.com/fundamentals/authentication/oauth-2-0/authorization-code) y [canje con cliente confidencial](https://docs.x.com/fundamentals/authentication/oauth-2-0/user-access-token).
+
 ### Sesión y límites de seguridad
 
-- Una sola cookie `.FinanzasPersonales.Auth`, Secure, HttpOnly, SameSite=Lax y duración absoluta de 30 minutos, sin persistencia ni renovación deslizante. Los seis proveedores usan esa misma sesión.
+- Una sola cookie `.FinanzasPersonales.Auth`, con duración absoluta de 30 minutos, sin persistencia ni renovación deslizante. Los ocho proveedores usan esa misma sesión; en HTTP local usa SameSite=Lax y en HTTPS mantiene Secure.
 - Correlación y nonce con cookies Secure/HttpOnly; los POST locales tienen protección antiforgery.
 - No se guardan tokens en la cookie (`SaveTokens=false`) ni se devuelven al navegador. Los diagnósticos internos de los handlers OAuth/OIDC se silencian para evitar registrar respuestas remotas; los fallos registran únicamente un aviso sanitizado.
 - Errores y cancelaciones muestran mensajes de una lista cerrada en la página oscura. Los textos se insertan mediante `textContent`, nunca como HTML. Las consultas de identidad/configuración evitan caché; al volver con Atrás se actualiza la sesión. Si falla otro proveedor, se avisa que la sesión anterior sigue activa.
-- La identidad estable es proveedor + ID para OAuth, y emisor + sub verificados para Google/Microsoft. Los seis emiten los mismos claims (`NameIdentifier`, `Name`, email opcional, `provider` y `external_provider`). El correo es solo informativo.
+- La identidad estable es proveedor + ID para OAuth, y emisor + sub verificados para Google, Microsoft y Slack. Todos emiten los mismos claims (`NameIdentifier`, `Name`, email opcional, `provider` y `external_provider`). El correo es solo informativo.
 - Ya existe `Usuario`, pero esta rama no tiene una vinculación segura para los seis proveedores. **No se crean ni vinculan usuarios locales por correo** ni se inventan emails o Guid. `/api/auth/me` devuelve `usuarioId: null` mientras no exista un vínculo local confiable; `identificadorExterno` es un dato diferente y nunca debe usarse como Guid financiero. Los servicios anteriores de login manual se conservan en disco, sin registro ni rutas activas; los controladores nuevos no los llaman. La autorización financiera requiere una integración explícita posterior.
 - Cerrar sesión elimina la cookie local; no revoca autorizaciones ni cierra la sesión del proveedor. Los CRUD existentes conservan su comportamiento: este aporte no implementa su autorización.
 - `Program.cs` conserva el contexto, los servicios CRUD, Scalar, sesión ASP.NET y archivos estáticos. Se retiró el OAuth inline/registro duplicado de cookie y se usa una sola extensión de autenticación. No se modifican modelos, tablas ni migraciones.
@@ -218,11 +308,19 @@ python3 tests/verify_auth.py
 python3 tests/verify_auth_sessions.py
 ```
 
-El primer script inicia/detiene su propia API en un puerto libre y comprueba los seis controladores, página, sesión anónima, 401, CSRF, redirecciones abiertas, callbacks alterados/reutilizados, cancelación y redirecciones oficiales con IDs deliberadamente ficticios. No canjea códigos ni autentica usuarios. Google/Microsoft requieren acceso a su metadata OIDC pública. Solo su cliente local omite la confianza del certificado de desarrollo; no altera TLS del backend a los proveedores. El comando anterior `python3 tests/verify_dev3_auth.py` ejecuta ahora esta misma batería común.
+El primer script inicia/detiene su propia API en puertos libres y comprueba modos HTTPS y HTTP, los ocho controladores, seis botones visibles sin Microsoft ni Spotify, sesión anónima, 401, CSRF, redirecciones abiertas, callbacks alterados/reutilizados, cancelación, retorno al frontend con query/fragmento y redirecciones oficiales con IDs deliberadamente ficticios. No canjea códigos ni autentica usuarios. Google, Microsoft y Slack requieren acceso a su metadata OIDC pública. Solo su cliente local omite la confianza del certificado de desarrollo; no altera TLS del backend a los proveedores. El comando anterior `python3 tests/verify_dev3_auth.py` ejecuta ahora esta misma batería común.
 
-`verify_auth_sessions.py` compila un harness contra la API existente, sin otro proyecto .NET. Usa perfiles simulados, claves de cookie efímeras y ninguna conexión PostgreSQL. Comprueba el contrato normalizado de los seis proveedores, cookies autenticadas, `/me`, `/user`, 403 al consultar otro proveedor, CSRF, logout y 401 después de salir. Para OIDC simula el resultado posterior a la validación: no demuestra la aceptación de tokens reales de Google/Microsoft. No crea rutas de pruebas ni mecanismos de bypass en producción.
+`verify_auth_sessions.py` compila un harness contra la API existente, sin otro proyecto .NET. Usa perfiles simulados, claves de cookie efímeras y ninguna conexión PostgreSQL. Comprueba el contrato normalizado de los ocho proveedores, cookies autenticadas, `/me`, `/user`, 403 al consultar otro proveedor, CSRF, logout y 401 después de salir. X tiene además una prueba de callback completo con token endpoint/perfil simulados: verifica HTTP Basic, PKCE S256, state corto, consumo/replay y errores de token sin llamar a X ni consumir créditos. Para OIDC simula el resultado posterior a la validación: no demuestra la aceptación de tokens reales de Google, Microsoft ni Slack. No crea rutas de pruebas ni mecanismos de bypass en producción.
 
-Para **cada uno de los seis proveedores**, con credenciales válidas y la API ejecutándose mediante HTTPS:
+Si Docker dejó `bin/obj` con propietario root, no es necesario borrar ni cambiar permisos de esos directorios para verificar estos cambios. Compilar en una salida aislada y apuntar las pruebas a ella:
+
+```bash
+dotnet build src/FinanzasPersonales.Api --artifacts-path /tmp/opencode/finanzas-x-build --no-incremental
+FINANZAS_TEST_OUTPUT=/tmp/opencode/finanzas-x-build/bin/FinanzasPersonales.Api/debug python3 tests/verify_auth.py
+FINANZAS_TEST_OUTPUT=/tmp/opencode/finanzas-x-build/bin/FinanzasPersonales.Api/debug python3 tests/verify_auth_sessions.py
+```
+
+Para **cada proveedor** que se desee validar realmente, con credenciales válidas y la API ejecutándose mediante HTTPS (o HTTP solo en desarrollo):
 
 1. Abrir `/` y pulsar su botón.
 2. Confirmar que se navega al dominio oficial de ese proveedor y autenticarse/consentir.

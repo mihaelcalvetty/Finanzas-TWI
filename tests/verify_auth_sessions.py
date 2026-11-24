@@ -1,9 +1,10 @@
 """Compila el harness contra la API existente, sin otro proyecto ni claves/secretos reales."""
 from pathlib import Path
+import os
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "src/FinanzasPersonales.Api/bin/Debug/net10.0"
+OUTPUT = Path(os.environ.get("FINANZAS_TEST_OUTPUT", str(ROOT / "src/FinanzasPersonales.Api/bin/Debug/net10.0")))
 
 
 def main():

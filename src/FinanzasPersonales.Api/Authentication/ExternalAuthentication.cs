@@ -8,6 +8,8 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OAuth;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
+using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using Microsoft.IdentityModel.Validators;
 using FinanzasPersonales.Api.Data;   // Ajusta al namespace de tu DbContext
@@ -30,7 +32,9 @@ public static class ExternalAuthentication
         new ExternalProvider("Twitch", "Twitch", "/signin-twitch"),
         new ExternalProvider("Spotify", "Spotify", "/signin-spotify"),
         new ExternalProvider("Dropbox", "Dev3.Dropbox", "/auth/dropbox/callback"),
-        new ExternalProvider("Microsoft", "Dev3.Microsoft", "/auth/microsoft/callback")
+        new ExternalProvider("Microsoft", "Dev3.Microsoft", "/auth/microsoft/callback"),
+        new ExternalProvider("X", "X", "/api/auth/x/callback"),
+        new ExternalProvider("Slack", "Slack", "/api/auth/slack/callback")
     });
 
     public static IServiceCollection AddExternalAuthentication(this IServiceCollection services, IConfiguration configuration)
@@ -40,13 +44,14 @@ public static class ExternalAuthentication
         {
             logging.AddFilter("Microsoft.AspNetCore.Authentication.OAuth.OAuthHandler", LogLevel.None);
             logging.AddFilter("Microsoft.AspNetCore.Authentication.OpenIdConnect.OpenIdConnectHandler", LogLevel.None);
+            logging.AddFilter("FinanzasPersonales.Api.Authentication.XOAuthHandler", LogLevel.None);
         });
         var isHttpMode = configuration["USE_HTTP_COOKIES"] == "true";
         services.AddAntiforgery(options =>
         {
             options.HeaderName = "RequestVerificationToken";
-
-            options.Cookie.Name = isHttpMode ? "Finanzas.Antiforgery" : "__Host-Finanzas.Antiforgery";
+            options.Cookie.Name = configuration["ANTIFORGERY_COOKIE_NAME"] ??
+                (isHttpMode ? "Finanzas.Antiforgery" : "__Host-Finanzas.Antiforgery");
             options.Cookie.SecurePolicy = isHttpMode ? CookieSecurePolicy.SameAsRequest : CookieSecurePolicy.Always;
             options.Cookie.HttpOnly = true;
             options.Cookie.SameSite = isHttpMode ? SameSiteMode.Lax : SameSiteMode.Strict;
@@ -61,7 +66,7 @@ public static class ExternalAuthentication
             options.DefaultChallengeScheme = LocalScheme;
         }).AddCookie(LocalScheme, options =>
         {
-            options.Cookie.Name = ".FinanzasPersonales.Auth";
+            options.Cookie.Name = configuration["AUTH_COOKIE_NAME"] ?? ".FinanzasPersonales.Auth";
             options.Cookie.HttpOnly = true;
             options.Cookie.SecurePolicy = isHttpMode ? CookieSecurePolicy.SameAsRequest : CookieSecurePolicy.Always;
             options.Cookie.SameSite = isHttpMode ? SameSiteMode.Lax : SameSiteMode.None;
@@ -86,7 +91,7 @@ public static class ExternalAuthentication
             // No registrar proveedores incompletos ni placeholders de plantillas anteriores.
             if (clientId is null || secret is null) continue;
 
-            if (provider.Name is "Google" or "Microsoft")
+            if (provider.Name is "Google" or "Microsoft" or "Slack")
             {
                 var tenant = Value(configuration, provider.Name, "TenantId") ?? "common";
                 if (provider.Name == "Microsoft" && tenant is not ("common" or "consumers" or "organizations") &&
@@ -94,6 +99,15 @@ public static class ExternalAuthentication
                     throw new InvalidOperationException("Microsoft TenantId debe ser common, consumers, organizations o un GUID.");
                 authentication.AddOpenIdConnect(provider.Scheme,
                     options => ConfigureOidc(options, provider, clientId, secret, callback, tenant, isHttpMode));
+            }
+            else if (provider.Name == "X")
+            {
+                authentication.AddOAuth<OAuthOptions, XOAuthHandler>(provider.Scheme,
+                    options => ConfigureOAuth(options, provider, clientId, secret, callback, isHttpMode));
+                // X limita state a 500 caracteres; el state protegido estándar puede superarlos.
+                // El caché guarda solo propiedades cifradas del intento, nunca tokens de acceso.
+                services.AddOptions<OAuthOptions>(provider.Scheme).PostConfigure<IDistributedCache>((options, cache) =>
+                    options.StateDataFormat = new XCachedStateFormat(options.StateDataFormat, cache, options.RemoteAuthenticationTimeout));
             }
             else
                 authentication.AddOAuth(provider.Scheme,
@@ -111,7 +125,7 @@ public static class ExternalAuthentication
         options.ClientSecret = secret;
         options.CallbackPath = callback;
         options.SaveTokens = false;
-        options.UsePkce = provider.Name is "Dropbox" or "Spotify";
+        options.UsePkce = provider.Name is "Dropbox" or "Spotify" or "X";
         options.RemoteAuthenticationTimeout = TimeSpan.FromMinutes(10);
         options.BackchannelTimeout = TimeSpan.FromSeconds(30);
         options.CorrelationCookie.SecurePolicy = isHttpMode ? CookieSecurePolicy.SameAsRequest : CookieSecurePolicy.Always;
@@ -127,6 +141,8 @@ public static class ExternalAuthentication
                 "https://api.spotify.com/v1/me", new[] { "user-read-email", "user-read-private" }),
             "Dropbox" => ("https://www.dropbox.com/oauth2/authorize", "https://api.dropboxapi.com/oauth2/token",
                 "https://api.dropboxapi.com/2/users/get_current_account", new[] { "account_info.read" }),
+            "X" => ("https://x.com/i/oauth2/authorize", "https://api.x.com/2/oauth2/token",
+                "https://api.x.com/2/users/me", new[] { "users.read", "tweet.read" }),
             _ => throw new InvalidOperationException("Proveedor OAuth no soportado.")
         };
         options.AuthorizationEndpoint = endpoints.Item1;
@@ -171,9 +187,16 @@ public static class ExternalAuthentication
                 throw new AuthenticationFailureException("El proveedor no devolvió una identidad.");
             profile = data[0];
         }
+        if (provider == "X")
+        {
+            if (!profile.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
+                throw new AuthenticationFailureException("X no devolvió una identidad válida.");
+            profile = data;
+        }
         var id = Text(profile, provider == "Dropbox" ? "account_id" : "id");
         if (string.IsNullOrWhiteSpace(id)) throw new AuthenticationFailureException("Falta el identificador del proveedor.");
         var name = Text(profile, "display_name") ?? Text(profile, "global_name") ?? Text(profile, "username") ?? Text(profile, "login");
+        if (provider == "X") name = Text(profile, "name") ?? Text(profile, "username");
         if (provider == "Dropbox" && profile.TryGetProperty("name", out var nested))
             name = Text(nested, "display_name");
         context.Identity!.AddClaim(new Claim(ClaimTypes.NameIdentifier, provider.ToLowerInvariant() + "|" + id));
@@ -185,16 +208,23 @@ public static class ExternalAuthentication
     private static void ConfigureOidc(OpenIdConnectOptions options, ExternalProvider provider,
         string clientId, string secret, string callback, string tenant, bool isHttpMode = false)
     {
-        options.Authority = provider.Name == "Google" ? "https://accounts.google.com" :
-            $"https://login.microsoftonline.com/{tenant}/v2.0";
+        options.Authority = provider.Name switch
+        {
+            "Google" => "https://accounts.google.com",
+            "Slack" => "https://slack.com",
+            _ => $"https://login.microsoftonline.com/{tenant}/v2.0"
+        };
         options.ClientId = clientId;
         options.ClientSecret = secret;
         options.CallbackPath = callback;
         options.SignInScheme = LocalScheme;
         options.RequireHttpsMetadata = true;
         options.ResponseType = OpenIdConnectResponseType.Code;
-        options.ResponseMode = OpenIdConnectResponseMode.FormPost;
-        options.UsePkce = true;
+        // En HTTP local las cookies Lax no viajan en un POST desde Google/Microsoft.
+        // Code + query devuelve solo el código por GET; los tokens se canjean en el servidor.
+        // Slack publica únicamente query y no anuncia soporte PKCE en su discovery.
+        options.ResponseMode = isHttpMode || provider.Name == "Slack" ? OpenIdConnectResponseMode.Query : OpenIdConnectResponseMode.FormPost;
+        options.UsePkce = provider.Name != "Slack";
         options.SaveTokens = false;
         options.MapInboundClaims = false;
         options.GetClaimsFromUserInfoEndpoint = false;
@@ -220,6 +250,8 @@ public static class ExternalAuthentication
         options.TokenValidationParameters.RequireExpirationTime = true;
         if (provider.Name == "Microsoft")
             options.TokenValidationParameters.IssuerValidator = AadIssuerValidator.GetAadIssuerValidator(options.Authority).Validate;
+        else if (provider.Name == "Slack")
+            options.TokenValidationParameters.ValidIssuer = "https://slack.com";
         else
             options.TokenValidationParameters.ValidIssuers = ["https://accounts.google.com", "accounts.google.com"];
         options.Events = new OpenIdConnectEvents
@@ -238,8 +270,9 @@ public static class ExternalAuthentication
             OnRemoteFailure = context => Failure(context, provider.Name),
             OnAccessDenied = context =>
             {
+                var returnUrl = context.Properties?.RedirectUri;
                 context.HandleResponse();
-                context.Response.Redirect(ErrorPath(provider.Name, "cancelled"));
+                context.Response.Redirect(ErrorPath(provider.Name, "cancelled", returnUrl));
                 return Task.CompletedTask;
             }
         };
@@ -254,7 +287,7 @@ public static class ExternalAuthentication
             context.Fail("No se recibió una identidad válida.");
             return Task.CompletedTask;
         }
-        // Misma identidad y mismos claims para los seis proveedores; sin roles ni vínculos por correo.
+        // Misma identidad y mismos claims para todos los proveedores; sin vínculos por correo.
         var claims = new List<Claim>
         {
             new(ClaimTypes.NameIdentifier, id), new(ProviderClaim, provider), new("provider", provider),
@@ -281,19 +314,22 @@ public static class ExternalAuthentication
 
     private static string ErrorPath(string provider, string error, string? returnUrl = null)
     {
-        var errorParam = "error=" + provider.ToLowerInvariant() + "-" + error;
+        var errorValue = provider.ToLowerInvariant() + "-" + error;
         if (!string.IsNullOrWhiteSpace(returnUrl) && Uri.TryCreate(returnUrl, UriKind.Absolute, out _))
         {
-            var separator = returnUrl.Contains('?') ? "&" : "?";
-            return returnUrl + separator + errorParam;
+            // Añadir el parámetro antes del fragmento (#...), no dentro de él.
+            return QueryHelpers.AddQueryString(returnUrl, "error", errorValue);
         }
-        return LoginPath + "?" + errorParam;
+        return QueryHelpers.AddQueryString(LoginPath, "error", errorValue);
     }
 
     private static Task Failure(RemoteFailureContext context, string provider)
     {
         var logger = context.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("Finanzas.Authentication");
-        logger.LogError(context.Failure, "Fallo en autenticación remota de {Provider}: {Message}", provider, context.Failure?.Message);
+        // No registrar excepciones/respuestas remotas que podrían incluir tokens o códigos.
+        var reason = context.Failure?.Message.Contains("Correlation failed", StringComparison.OrdinalIgnoreCase) == true
+            ? "correlation_failed" : "remote_authentication_failed";
+        logger.LogWarning("Fallo en autenticación remota de {Provider}. Motivo: {Reason}", provider, reason);
         var returnUrl = context.Properties?.RedirectUri;
         context.HandleResponse();
         context.Response.Redirect(ErrorPath(provider, "failed", returnUrl));

@@ -5,6 +5,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -21,6 +22,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -55,6 +57,8 @@ internal static class AuthSessionVerification
         builder.WebHost.UseUrls("https://127.0.0.1:0");
         builder.Services.AddDataProtection().UseEphemeralDataProtectionProvider();
         builder.Services.AddExternalAuthentication(builder.Configuration);
+        var xBackchannel = new XTokenFixture();
+        builder.Services.PostConfigure<OAuthOptions>("X", options => options.Backchannel = new HttpClient(xBackchannel));
         builder.Services.AddAuthorization();
         builder.Services.AddDistributedMemoryCache();
         builder.Services.AddSession();
@@ -78,10 +82,10 @@ internal static class AuthSessionVerification
                 var identity = new ClaimsIdentity(provider.Scheme);
                 RemoteAuthenticationOptions remoteOptions;
                 Func<TicketReceivedContext, Task> normalize;
-                if (provider.Name is "Google" or "Microsoft")
+                if (provider.Name is "Google" or "Microsoft" or "Slack")
                 {
                     var options = app.Services.GetRequiredService<IOptionsMonitor<OpenIdConnectOptions>>().Get(provider.Scheme);
-                    Check(!options.SaveTokens && options.UsePkce && options.ProtocolValidator.RequireNonce, "OIDC debe conservar nonce/PKCE sin guardar tokens.");
+                    Check(!options.SaveTokens && options.UsePkce == (provider.Name != "Slack") && options.ProtocolValidator.RequireNonce, "OIDC debe conservar nonce y usar PKCE donde está soportado, sin guardar tokens.");
                     // Emula exclusivamente el resultado de un ID token YA validado por el middleware.
                     identity.AddClaim(new Claim(ClaimTypes.NameIdentifier, "https://fixture.example/issuer|subject"));
                     identity.AddClaim(new Claim(ClaimTypes.Name, "Fixture " + provider.Name));
@@ -131,7 +135,8 @@ internal static class AuthSessionVerification
                 Check(me.GetProperty("proveedor").GetString() == provider.Name, "Proveedor de la sesión debe coincidir.");
                 Check(me.GetProperty("usuarioId").ValueKind == JsonValueKind.Null, "ID externo no es Guid local.");
                 Check(me.GetProperty("nombre").GetString() == "Fixture " + provider.Name, "Nombre debe conservarse.");
-                Check(me.GetProperty("email").GetString() == "fixture@example.invalid", "Correo informativo debe conservarse.");
+                Check(provider.Name == "X" ? me.GetProperty("email").ValueKind == JsonValueKind.Null :
+                    me.GetProperty("email").GetString() == "fixture@example.invalid", "Correo opcional debe conservarse sin inventarlo.");
                 var route = "/api/auth/" + provider.Name.ToLowerInvariant() + "/user";
                 Check((await client.GetAsync(route)).StatusCode == HttpStatusCode.OK, "user del proveedor propio debe responder 200.");
                 var other = ExternalAuthentication.Providers.First(p => p.Name != provider.Name);
@@ -149,7 +154,40 @@ internal static class AuthSessionVerification
                 Check(!(await Json("/api/auth/me")).GetProperty("isAuthenticated").GetBoolean(), "Cookie debe quedar eliminada.");
                 Check((int)(await client.GetAsync(route)).StatusCode == 401, "user sin cookie vuelve a 401.");
             }
-            Console.WriteLine($"OK: {checks} comprobaciones de perfiles simulados, contrato común, cookies y logout para seis proveedores.");
+            // Flujo completo X con middleware real y backchannel simulado: PKCE, Basic,
+            // state corto/correlación, consulta de perfil y emisión de cookie local.
+            var xHandler = new HttpClientHandler
+            {
+                AllowAutoRedirect = false,
+                ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+            };
+            using var xClient = new HttpClient(xHandler) { BaseAddress = new Uri(baseUrl) };
+            var xChallenge = await xClient.GetAsync("/api/auth/x/login?returnUrl=/api/auth/me");
+            Check((int)xChallenge.StatusCode == 302, "X debe producir challenge.");
+            var xQuery = QueryHelpers.ParseQuery(xChallenge.Headers.Location!.Query);
+            var xState = xQuery["state"].ToString();
+            Check(xState.Length == 43, "state X debe ser opaco y menor de 500 caracteres.");
+            xBackchannel.ExpectedChallenge = xQuery["code_challenge"].ToString();
+            var callback = "/api/auth/x/callback?code=fixture-code&state=" + Uri.EscapeDataString(xState);
+            var xCallback = await xClient.GetAsync(callback);
+            Check((int)xCallback.StatusCode == 302 && xCallback.Headers.Location!.OriginalString == "/api/auth/me", "X debe completar callback.");
+            var xSession = JsonDocument.Parse(await xClient.GetStringAsync("/api/auth/me")).RootElement;
+            Check(xSession.GetProperty("isAuthenticated").GetBoolean() && xSession.GetProperty("proveedor").GetString() == "X", "X debe crear sesión compartida.");
+            Check(xSession.GetProperty("identificadorExterno").GetString() == "x|roundtrip-id", "X debe usar el ID estable del perfil.");
+            Check(xSession.GetProperty("email").ValueKind == JsonValueKind.Null, "X no requiere correo para autenticar.");
+            Check((await xClient.GetAsync("/api/auth/x/user")).StatusCode == HttpStatusCode.OK, "Endpoint X user debe reconocer la cookie.");
+            var xReplay = await xClient.GetAsync(callback);
+            Check((int)xReplay.StatusCode == 302 && xReplay.Headers.Location!.OriginalString.Contains("error=x-failed"), "No reutilizar state X consumido.");
+            Check(xBackchannel.Exchanges == 1, "Replay no debe canjear otro código.");
+
+            xBackchannel.RejectToken = true;
+            var rejectedChallenge = await xClient.GetAsync("/api/auth/x/login");
+            var rejectedQuery = QueryHelpers.ParseQuery(rejectedChallenge.Headers.Location!.Query);
+            xBackchannel.ExpectedChallenge = rejectedQuery["code_challenge"].ToString();
+            var rejected = await xClient.GetAsync("/api/auth/x/callback?code=fixture-code&state=" + Uri.EscapeDataString(rejectedQuery["state"].ToString()));
+            Check((int)rejected.StatusCode == 302 && rejected.Headers.Location!.OriginalString.Contains("error=x-failed"), "Token rechazado debe producir error controlado.");
+            Check(!rejected.Headers.Location!.OriginalString.Contains("fixture-secret"), "No filtrar secretos en errores.");
+            Console.WriteLine($"OK: {checks} comprobaciones de perfiles, cookies y logout para ocho proveedores, incluido callback X simulado con PKCE/Basic/state.");
             Console.WriteLine("NO se probó autenticación real ni validación de tokens emitidos por los proveedores.");
         }
         finally { await app.StopAsync(); }
@@ -168,9 +206,44 @@ internal static class AuthSessionVerification
                 "Twitch" => "{\"data\":[{\"id\":\"fixture-id\",\"display_name\":\"Fixture Twitch\",\"email\":\"fixture@example.invalid\"}]}",
                 "Spotify" => "{\"id\":\"fixture-id\",\"display_name\":\"Fixture Spotify\",\"email\":\"fixture@example.invalid\"}",
                 "Dropbox" => "{\"account_id\":\"fixture-id\",\"name\":{\"display_name\":\"Fixture Dropbox\"},\"email\":\"fixture@example.invalid\"}",
+                "X" => "{\"data\":{\"id\":\"fixture-id\",\"name\":\"Fixture X\",\"username\":\"fixture_x\"}}",
                 _ => throw new InvalidOperationException()
             };
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(profile, Encoding.UTF8, "application/json") });
+        }
+    }
+
+    private sealed class XTokenFixture : HttpMessageHandler
+    {
+        public string ExpectedChallenge { get; set; } = string.Empty;
+        public int Exchanges { get; private set; }
+        public bool RejectToken { get; set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Check(request.RequestUri!.Scheme == "https" && request.RequestUri.Host == "api.x.com", "X solo usa endpoints HTTPS oficiales.");
+            if (request.RequestUri.AbsolutePath == "/2/oauth2/token")
+            {
+                Exchanges++;
+                Check(request.Method == HttpMethod.Post && request.Headers.Authorization?.Scheme == "Basic", "Cliente web X debe usar POST + HTTP Basic.");
+                var credentials = Encoding.UTF8.GetString(Convert.FromBase64String(request.Headers.Authorization!.Parameter!));
+                Check(credentials == "fixture-client:fixture-secret", "Basic debe usar OAuth 2 Client ID/Secret.");
+                var form = QueryHelpers.ParseQuery(await request.Content!.ReadAsStringAsync(cancellationToken));
+                Check(!form.ContainsKey("client_secret") && form["grant_type"] == "authorization_code", "No duplicar secretos en el cuerpo.");
+                Check(form["code"] == "fixture-code" && form.ContainsKey("redirect_uri"), "Canje debe incluir código y callback.");
+                var challenge = WebEncoders.Base64UrlEncode(SHA256.HashData(Encoding.UTF8.GetBytes(form["code_verifier"].ToString())));
+                Check(challenge == ExpectedChallenge, "El verifier debe corresponder al challenge S256 inicial.");
+                return new HttpResponseMessage(RejectToken ? HttpStatusCode.Unauthorized : HttpStatusCode.OK)
+                {
+                    Content = new StringContent(RejectToken ? "{\"error\":\"invalid_client\"}" :
+                        "{\"access_token\":\"fixture-x-access-token\",\"token_type\":\"bearer\"}", Encoding.UTF8, "application/json")
+                };
+            }
+            Check(request.RequestUri.AbsolutePath == "/2/users/me" && request.Headers.Authorization?.Scheme == "Bearer", "Perfil X debe consultarse con token de usuario, no app-only.");
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"data\":{\"id\":\"roundtrip-id\",\"name\":\"Roundtrip X\",\"username\":\"roundtrip_x\"}}", Encoding.UTF8, "application/json")
+            };
         }
     }
 }

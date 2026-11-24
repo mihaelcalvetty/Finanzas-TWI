@@ -21,8 +21,8 @@
       --google: #ea4335;
       --discord: #5865f2;
       --twitch: #9146ff;
-      --spotify: #1db954;
-      --microsoft: #00a4ef;
+      --slack: #4a154b;
+      --x: #111827;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
@@ -99,8 +99,8 @@
     .btn-google { background: var(--google); color: white; }
     .btn-discord { background: var(--discord); color: white; }
     .btn-twitch { background: var(--twitch); color: white; }
-    .btn-spotify { background: var(--spotify); color: white; }
-    .btn-microsoft { background: var(--microsoft); color: white; }
+    .btn-slack { background: var(--slack); color: white; }
+    .btn-x { background: var(--x); color: white; border: 1px solid var(--card-border); }
     .btn-logout { background: var(--danger); color: white; }
     .btn-seed { background: var(--purple); color: white; }
   </style>
@@ -167,7 +167,7 @@
           </span>
         </div>
         <div style="display: flex; gap: 0.5rem;">
-          <button class="btn-sm btn-seed" id="btn-seed" style="display:none;" onclick="seedData()">Sembrar Datos Ejemplo</button>
+          <button class="btn-sm btn-seed" id="btn-seed" style="display:none;" onclick="seedData()">Completar Datos Ejemplo</button>
           <button class="btn-sm" id="btn-refresh-report" onclick="loadReport()">Recargar Reporte</button>
           <button class="btn-sm" style="background: #475569;" onclick="testUnauthorizedDirectly()">Probar 401 Sin Sesión</button>
         </div>
@@ -214,6 +214,10 @@
     let API_URL = (window.APP_CONFIG && window.APP_CONFIG.API_URL) ? window.APP_CONFIG.API_URL : "https://localhost:7133";
     const savedApi = localStorage.getItem("FINANZAS_API_URL");
     if (savedApi) API_URL = savedApi;
+    // En el túnel, API y frontend comparten origen para que la cookie sea accesible.
+    if (window.location.origin === "https://projector-delegate-hulk.ngrok-free.dev") {
+      API_URL = window.location.origin;
+    }
 
     function updateApiDisplay() {
       document.getElementById("current-api-text").textContent = API_URL;
@@ -261,12 +265,14 @@
       loadCuentasFlujo();
     }
 
-    function showAlert(msg, type = "info") {
+    function showAlert(msg, type = "info", persistent = false) {
       const box = document.getElementById("alert-box");
       box.className = `alert ${type}`;
       box.textContent = msg;
       box.style.display = "block";
-      setTimeout(() => { if (box.textContent === msg) box.style.display = "none"; }, 6000);
+      if (!persistent) {
+        setTimeout(() => { if (box.textContent === msg) box.style.display = "none"; }, 6000);
+      }
     }
 
     // 2. Consulta de Sesión Activa (/api/auth/me)
@@ -319,7 +325,7 @@
               </div>
               <div class="info-item" style="grid-column: 1 / -1;">
                 <div class="info-label">UsuarioId Interno (GUID Base de Datos)</div>
-                <div class="info-value" style="font-family: monospace; color: #a78bfa;">${data.usuarioId || "Vinculado dinámicamente para consultas"}</div>
+                <div class="info-value" style="font-family: monospace; color: #a78bfa;">${data.usuarioId || "No informado en la sesión"}</div>
               </div>
             </div>
           `;
@@ -396,13 +402,13 @@
       container.innerHTML = `
         <div style="background: rgba(239, 68, 68, 0.08); border: 1px dashed rgba(239, 68, 68, 0.3); border-radius: 0.75rem; padding: 1.5rem; text-align: center;">
           <p style="font-size: 1.1rem; font-weight: 700; color: var(--danger); margin-bottom: 0.5rem;">
-            Reporte Protegido &bull; HTTP 401 Unauthorized
+            Estado del reporte
           </p>
           <p style="color: var(--text-muted); font-size: 0.9rem; max-width: 550px; margin: 0 auto 1rem auto;">
-            ${reason} Inicia sesión con Dropbox (u otro proveedor configurado) para generar y visualizar tu diagnóstico de salud financiera.
+            ${reason}
           </p>
-          <button class="btn-sm" style="background: #334155;" onclick="testUnauthorizedDirectly()">
-            Reintentar petición GET (Comprobar 401)
+          <button class="btn-sm" style="background: #334155;" onclick="loadReport()">
+            Recargar reporte con mi sesión
           </button>
         </div>
       `;
@@ -651,9 +657,13 @@
     async function seedData() {
       try {
         showAlert("Sembrando datos de prueba en la base de datos para Dev3...", "info");
-        const res = await fetch(`${API_URL}/api/reportes/sembrar-datos-ejemplo`, {
+        const csrfRes = await fetch(`${API_URL}/api/auth/csrf`, { credentials: "include" });
+        if (!csrfRes.ok) throw new Error(`CSRF HTTP ${csrfRes.status}`);
+        const { token } = await csrfRes.json();
+        const res = await fetch(`${API_URL}/api/reportes/salud-financiera/sembrar-datos-ejemplo`, {
           method: "POST",
-          credentials: "include"
+          credentials: "include",
+          headers: { "RequestVerificationToken": token }
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
@@ -673,7 +683,7 @@
         });
         showAlert(`Respuesta de la API sin sesión: HTTP ${res.status} ${res.statusText}`, res.status === 401 ? "warning" : "info");
         if (res.status === 401) {
-          renderReportUnauthorized("Demostración exitosa: La API rechazó la solicitud con HTTP 401 Unauthorized al no contar con cookie de sesión.");
+          showAlert("Demostración exitosa: la API devolvió 401 a una petición sin cookie. Tu sesión no se cerró.", "warning");
         }
       } catch (err) {
         showAlert(`Error en prueba 401: ${err.message}`, "error");
@@ -685,9 +695,9 @@
       Google: { tag: "OIDC", btnClass: "btn-google", color: "var(--google)" },
       Discord: { tag: "OAuth2", btnClass: "btn-discord", color: "var(--discord)" },
       Twitch: { tag: "OAuth2", btnClass: "btn-twitch", color: "var(--twitch)" },
-      Spotify: { tag: "OAuth2 + PKCE", btnClass: "btn-spotify", color: "var(--spotify)" },
+      Slack: { tag: "OpenID Connect", btnClass: "btn-slack", color: "var(--slack)" },
       Dropbox: { tag: "OAuth2 + PKCE", btnClass: "btn-dropbox", color: "var(--dropbox)" },
-      Microsoft: { tag: "OIDC + PKCE", btnClass: "btn-microsoft", color: "var(--microsoft)" }
+      X: { label: "X (Twitter)", tag: "OAuth2 + PKCE", btnClass: "btn-x", color: "var(--x)" }
     };
 
     async function loadProviders() {
@@ -697,21 +707,27 @@
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const providers = await res.json();
 
-        container.innerHTML = providers.map(p => {
+        // Microsoft y Spotify permanecen disponibles en el backend.
+        container.innerHTML = providers.filter(p => p.name !== "Microsoft" && p.name !== "Spotify").map(p => {
           const meta = providerMeta[p.name] || { tag: "OAuth", btnClass: "btn-dropbox", color: "var(--primary)" };
+          const label = meta.label || p.name;
           const pLower = p.name.toLowerCase();
-          const returnUrl = encodeURIComponent(window.location.href);
+          const returnLocation = new URL(window.location.href);
+          returnLocation.searchParams.delete("error");
+          const returnUrl = encodeURIComponent(returnLocation.origin === API_URL
+            ? returnLocation.pathname + returnLocation.search + returnLocation.hash
+            : returnLocation.href);
           const loginUrl = `${API_URL}/api/auth/${pLower}/login?returnUrl=${returnUrl}`;
 
           if (p.configured) {
             return `
               <div class="provider-card" style="border-left: 4px solid ${meta.color};">
                 <div class="provider-header">
-                  <span class="provider-name">${p.name}</span>
+                  <span class="provider-name">${label}</span>
                   <span class="tag tag-configured">Configurado &bull; ${meta.tag}</span>
                 </div>
                 <a href="${loginUrl}" class="btn ${meta.btnClass}">
-                  Iniciar sesión con ${p.name}
+                  Iniciar sesión con ${label}
                 </a>
               </div>
             `;
@@ -719,7 +735,7 @@
             return `
               <div class="provider-card" style="opacity: 0.6;">
                 <div class="provider-header">
-                  <span class="provider-name" style="color: var(--text-muted);">${p.name}</span>
+                  <span class="provider-name" style="color: var(--text-muted);">${label}</span>
                   <span class="tag tag-pending">Pendiente &bull; ${meta.tag}</span>
                 </div>
                 <button class="btn btn-sm" disabled title="No configurado en el archivo .env">
@@ -780,7 +796,14 @@
       const params = new URLSearchParams(window.location.search);
       const error = params.get("error");
       if (error) {
-        showAlert(`Error de autenticación reportado: ${error}`, "error");
+        let message = "No se pudo completar el inicio de sesión. Vuelve a intentarlo.";
+        for (const provider of Object.keys(providerMeta)) {
+          const key = provider.toLowerCase();
+          if (error === `${key}-failed`) message = `No se pudo iniciar sesión con ${provider}. Vuelve a intentarlo.`;
+          if (error === `${key}-cancelled`) message = `Se canceló el inicio de sesión con ${provider}.`;
+          if (error === `${key}-not-configured`) message = `${provider} no tiene sus credenciales configuradas.`;
+        }
+        showAlert(message, "error", true);
       }
     });
   </script>
